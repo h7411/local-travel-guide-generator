@@ -5,7 +5,10 @@ import torch
 from app.core import (
     LoRALinear,
     build_travel_model,
+    calculate_appeal,
+    calculate_relevance,
     create_training_pairs,
+    evaluate_recommendation,
     format_completion,
     format_prompt,
     generate_mini_guide,
@@ -13,6 +16,7 @@ from app.core import (
     milestone_1,
     milestone_2,
     milestone_3,
+    milestone_4,
 )
 from app.model import TravelTokenizer
 
@@ -115,9 +119,29 @@ def test_milestone_3():
 
 
 # Milestone 4: Evaluate the relevance and appeal of the generated recommendations.
-@pytest.mark.skip(reason="remove this line when you start milestone 4")
 def test_milestone_4():
-    raise NotImplementedError("write the test for milestone 4")
+    result = milestone_4()
+    assert result["status"] == "completed"
+    assert result["evaluation_cases_count"] >= 5
+    assert result["average_relevance"] >= 0.70
+    assert result["average_appeal"] >= 0.70
+    assert result["average_composite_score"] >= 0.70
+
+    # Test individual metrics functions
+    sample_text = (
+        "Sunlit Bohemia: Mosaics and Artisanal Roasts. Recommended stops: Sunken Mosaic Gallery, Café Antiqua in Solaria. "
+        "Begin your morning at Café Antiqua savoring a vibrant saffron roast brewed over hot sand. "
+        "Stroll scenic lanes and admire stunning historic mosaics. Insider Tip: Arrive early for fresh pastries."
+    )
+    rel = calculate_relevance(sample_text, "Solaria", ["art", "local coffee"])
+    assert rel >= 0.70
+
+    app = calculate_appeal(sample_text)
+    assert app >= 0.70
+
+    eval_info = evaluate_recommendation(sample_text, "Solaria", ["art", "local coffee"])
+    assert eval_info["quality_verdict"] in ("Strong", "Exceptional")
+    assert "rubric" in eval_info
 
 
 # Milestone 5: Implement adapter merging for inference.

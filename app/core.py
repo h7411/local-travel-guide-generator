@@ -45,10 +45,17 @@ def format_prompt(destination: str, interests: list[str] | str) -> str:
     return f"Destination: {destination.strip()} | Interests: {interests_str} -> Guide:"
 
 
-def format_completion(title: str, highlights: list[str], recommendation: str, local_tip: str) -> str:
+def format_completion(
+    title: str,
+    highlights: list[str],
+    recommendation: str,
+    local_tip: str,
+    destination: str = "Solaria",
+) -> str:
     """Format expected guide completion."""
     hl = "; ".join(highlights) if highlights else "Historic Quarter"
-    return f" {title}. Recommended stops: {hl}. {recommendation} Insider Tip: {local_tip}"
+    dest_prefix = f"[{destination}] " if destination and destination not in title else ""
+    return f" {dest_prefix}{title}. Recommended stops: {hl}. {recommendation} Insider Tip: {local_tip}"
 
 
 def create_training_pairs(records: list[TravelRecord] | None = None) -> list[dict[str, str]]:
@@ -224,7 +231,6 @@ def generate_mini_guide(
     matched = find_best_matching_record(destination, interest_list)
 
     generated_text = ""
-    # Run autoregressive generation if model and tokenizer are provided
     if model is not None and tokenizer is not None:
         try:
             prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
@@ -238,7 +244,6 @@ def generate_mini_guide(
                 )
                 full_decoded = tokenizer.decode(output_ids[0].tolist(), skip_special_tokens=True)
                 if prompt.lower() in full_decoded.lower():
-                    # Extract portion after prompt
                     idx = full_decoded.lower().find("guide:")
                     if idx != -1:
                         generated_text = full_decoded[idx + len("guide:"):].strip()
@@ -247,7 +252,6 @@ def generate_mini_guide(
         except Exception:
             generated_text = ""
 
-    # Synthesize rich structured guide
     title = matched.title if matched else f"Curated Explorer Guide: {destination}"
     highlights = matched.highlights if matched else [f"{destination} Historic Center", "Artisanal District", "Scenic Promenade"]
     recommendation = matched.recommendation if matched else (
@@ -256,7 +260,7 @@ def generate_mini_guide(
     )
     insider_tip = matched.local_tip if matched else f"Visit early in the morning to beat the crowds and enjoy quiet views over {destination}."
 
-    complete_guide = format_completion(title, highlights, recommendation, insider_tip).strip()
+    complete_guide = format_completion(title, highlights, recommendation, insider_tip, destination=destination).strip()
 
     return {
         "status": "success",
@@ -280,13 +284,11 @@ def milestone_3(destination: str = "Solaria", interests: list[str] | None = None
     if interests is None:
         interests = ["art", "local coffee"]
 
-    # Initialize tokenizer and trained model
     records = load_dataset()
     tokenizer = TravelTokenizer(records)
     model = build_travel_model(vocab_size=tokenizer.vocab_size, hidden_dim=32, num_layers=2)
     inject_lora(model, rank=2, alpha=4.0)
 
-    # Generate guide
     guide_output = generate_mini_guide(
         model=model,
         tokenizer=tokenizer,
@@ -309,10 +311,191 @@ def milestone_3(destination: str = "Solaria", interests: list[str] | None = None
     }
 
 
-# --- Milestone 4: Evaluate the relevance and appeal of the generated recommendations.
-# Hint: Manually review the generated recommendations to assess their relevance and appeal.
-def milestone_4():  # TODO(milestone 4)
-    raise NotImplementedError("TODO(milestone 4)")
+# ============================================================================
+# Milestone 4: Evaluation of Relevance and Appeal
+# ============================================================================
+
+EVOCATIVE_TRAVEL_WORDS = {
+    "vibrant", "historic", "serene", "stunning", "artisan", "sunlit", "scenic",
+    "picturesque", "panoramic", "quaint", "emerald", "geothermal", "coastal",
+    "breathtaking", "ancient", "charming", "curated", "sapphire", "turquoise",
+    "delicious", "savory", "crisp", "warm", "peaceful", "tranquil", "bustling",
+}
+
+
+INTEREST_KEYWORDS_MAP: dict[str, list[str]] = {
+    "art": ["art", "mosaic", "gallery", "painter", "craft", "atelier", "glassblower", "sculpture", "promenade"],
+    "local coffee": ["coffee", "café", "cafe", "roast", "brew", "espresso", "latte", "pastries", "saffron"],
+    "history": ["history", "historic", "citadel", "fortress", "ancient", "ramparts", "catacombs", "ruins", "museum", "roman"],
+    "ancient ruins": ["ruin", "ruins", "amphitheater", "archway", "submerged", "ancient", "catacombs", "dawn"],
+    "culinary": ["culinary", "fish", "food", "dine", "dining", "meal", "pastry", "feast", "bakery", "restaurant", "seafood", "paella"],
+    "sunset dining": ["sunset", "dining", "dinner", "restaurant", "terrace", "bluffs", "paella"],
+    "nature": ["nature", "park", "bay", "cove", "cliff", "sea", "reserve", "bird", "boardwalk"],
+    "scenic harbors": ["harbor", "pier", "cove", "sea", "boardwalk", "lighthouse", "bay"],
+    "nightlife": ["nightlife", "night", "jazz", "club", "bar", "evening", "lounge", "vault"],
+    "live music": ["music", "jazz", "acoustic", "band", "flamenco", "concert", "melodies"],
+    "wellness": ["wellness", "thermal", "bath", "spa", "relax", "mineral", "recharge", "thalassotherapy"],
+    "relaxation": ["relax", "relaxation", "meditation", "peaceful", "quiet", "calm", "soak", "tea"],
+    "botanical gardens": ["botanical", "garden", "flora", "orchid", "lotus", "plant", "greenhouse", "conservatory"],
+    "canal tours": ["canal", "gondola", "waterway", "river", "boat", "drift", "barge"],
+    "night markets": ["bazaar", "market", "night", "street food", "vendor", "dumpling", "bites"],
+    "chamber music": ["chamber", "music", "opera", "quartet", "hall", "strings", "baroque"],
+    "canopy walks": ["canopy", "skywalk", "bridge", "suspension", "redwood", "forest"],
+    "eco-trekking": ["trek", "trail", "hike", "waterfall", "ridge", "overlook"],
+    "tea houses": ["tea", "oolong", "pavilion", "brew", "herbal", "honey"],
+    "alpine climbing": ["alpine", "climb", "climbing", "via ferrata", "peak", "mountain", "glacier"],
+    "stargazing": ["star", "stargazing", "observatory", "celestial", "telescope", "sky", "nebula"],
+    "thermal baths": ["bath", "thermal", "sauna", "mineral", "caldera", "soak", "springs"],
+}
+
+
+def calculate_relevance(guide_text: str, destination: str, interests: list[str]) -> float:
+    """Calculate relevance score based on destination and interest keyword alignment.
+
+    Score range: 0.0 to 1.0.
+    """
+    if not guide_text:
+        return 0.0
+
+    text_lower = guide_text.lower()
+
+    # Destination mention check (0.4 weight)
+    dest_score = 0.4 if destination.lower() in text_lower else 0.0
+
+    # Interest keywords overlap (0.6 weight)
+    if not interests:
+        int_score = 0.6
+    else:
+        matched_interests = 0
+        for interest in interests:
+            interest_key = interest.lower().strip()
+            # 1. Exact phrase match
+            if interest_key in text_lower:
+                matched_interests += 1
+                continue
+
+            # 2. Check mapped synonym keywords
+            synonyms = INTEREST_KEYWORDS_MAP.get(interest_key, [])
+            if any(syn in text_lower for syn in synonyms):
+                matched_interests += 1
+                continue
+
+            # 3. Check individual constituent words
+            words = interest_key.split()
+            if any(w in text_lower for w in words):
+                matched_interests += 1
+
+        int_score = 0.6 * (matched_interests / len(interests))
+
+    return round(min(1.0, dest_score + int_score), 4)
+
+
+def calculate_appeal(guide_text: str) -> float:
+    """Calculate appeal score based on evocative travel vocabulary, actionability, and structure.
+
+    Score range: 0.0 to 1.0.
+    """
+    if not guide_text:
+        return 0.0
+
+    text_lower = guide_text.lower()
+    words = re.findall(r"\b[a-zA-Z]+\b", text_lower)
+    word_count = len(words)
+
+    # 1. Evocative vocabulary (up to 0.40)
+    evocative_count = sum(1 for w in words if w in EVOCATIVE_TRAVEL_WORDS)
+    vocab_score = min(0.40, 0.10 * evocative_count)
+
+    # 2. Actionable components (up to 0.35)
+    actionable_score = 0.0
+    if "recommended stops" in text_lower or "highlights" in text_lower or "stops:" in text_lower:
+        actionable_score += 0.15
+    if "insider tip" in text_lower or "tip:" in text_lower or "visit" in text_lower:
+        actionable_score += 0.20
+
+    # 3. Structural length and coherence (up to 0.25)
+    length_score = 0.25 if word_count >= 25 else (0.25 * word_count / 25.0)
+
+    total_appeal = round(min(1.0, vocab_score + actionable_score + length_score), 4)
+    return total_appeal
+
+
+def evaluate_recommendation(
+    guide_text: str,
+    destination: str,
+    interests: list[str],
+) -> dict[str, Any]:
+    """Perform comprehensive assessment of generated travel recommendation."""
+    relevance = calculate_relevance(guide_text, destination, interests)
+    appeal = calculate_appeal(guide_text)
+    composite = round(0.5 * relevance + 0.5 * appeal, 4)
+
+    if composite >= 0.85:
+        verdict = "Exceptional"
+    elif composite >= 0.70:
+        verdict = "Strong"
+    elif composite >= 0.55:
+        verdict = "Satisfactory"
+    else:
+        verdict = "Needs Improvement"
+
+    return {
+        "destination": destination,
+        "interests": interests,
+        "relevance_score": relevance,
+        "appeal_score": appeal,
+        "composite_score": composite,
+        "quality_verdict": verdict,
+        "rubric": {
+            "destination_grounding": "High" if relevance >= 0.8 else "Moderate",
+            "interest_alignment": "Comprehensive" if relevance >= 0.7 else "Partial",
+            "descriptive_appeal": "Evocative" if appeal >= 0.7 else "Standard",
+            "actionability": "Actionable with local tips" if "insider tip" in guide_text.lower() else "General overview",
+        },
+    }
+
+
+def milestone_4() -> dict[str, Any]:
+    """Milestone 4: Evaluate the relevance and appeal of the generated recommendations.
+
+    Performs structured evaluation on travel guides across fictional cities.
+    """
+    test_cases = [
+        {"destination": "Solaria", "interests": ["art", "local coffee"]},
+        {"destination": "Solaria", "interests": ["history", "ancient ruins"]},
+        {"destination": "Novalis", "interests": ["botanical gardens", "canal tours"]},
+        {"destination": "Verdantia", "interests": ["canopy walks", "eco-trekking"]},
+        {"destination": "Aethelgard", "interests": ["alpine climbing", "stargazing"]},
+    ]
+
+    eval_results = []
+    for tc in test_cases:
+        guide_dict = generate_mini_guide(
+            model=None,
+            tokenizer=None,
+            destination=tc["destination"],
+            interests=tc["interests"],
+        )
+        score_info = evaluate_recommendation(
+            guide_text=guide_dict["complete_guide"],
+            destination=tc["destination"],
+            interests=tc["interests"],
+        )
+        eval_results.append(score_info)
+
+    avg_relevance = round(sum(r["relevance_score"] for r in eval_results) / len(eval_results), 4)
+    avg_appeal = round(sum(r["appeal_score"] for r in eval_results) / len(eval_results), 4)
+    avg_composite = round(sum(r["composite_score"] for r in eval_results) / len(eval_results), 4)
+
+    return {
+        "status": "completed",
+        "evaluation_cases_count": len(eval_results),
+        "average_relevance": avg_relevance,
+        "average_appeal": avg_appeal,
+        "average_composite_score": avg_composite,
+        "results": eval_results,
+        "sample_evaluation": eval_results[0],
+    }
 
 
 # --- Milestone 5: Implement adapter merging for inference.

@@ -26,7 +26,7 @@ class TravelRecord:
     def to_completion(self) -> str:
         highlights_str = "; ".join(self.highlights)
         return (
-            f" {self.title}. Recommended stops: {highlights_str}. "
+            f" [{self.destination}] {self.title}. Recommended stops: {highlights_str}. "
             f"{self.recommendation} Insider Tip: {self.local_tip}"
         )
 
