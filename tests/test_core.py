@@ -8,10 +8,13 @@ from app.core import (
     create_training_pairs,
     format_completion,
     format_prompt,
+    generate_mini_guide,
     inject_lora,
     milestone_1,
     milestone_2,
+    milestone_3,
 )
+from app.model import TravelTokenizer
 
 
 # Milestone 1: Prepare a small dataset of travel interests and corresponding local recommendations for a fictional city.
@@ -84,9 +87,31 @@ def test_milestone_2():
 
 
 # Milestone 3: Develop a Streamlit UI to input interests and destination, generating a mini-guide.
-@pytest.mark.skip(reason="remove this line when you start milestone 3")
 def test_milestone_3():
-    raise NotImplementedError("write the test for milestone 3")
+    result = milestone_3(destination="Solaria", interests=["art", "local coffee"])
+    assert result["status"] == "completed"
+    assert result["destination"] == "Solaria"
+    assert "art" in result["interests"]
+    assert "local coffee" in result["interests"]
+    assert len(result["highlights"]) > 0
+    assert len(result["recommendation"]) > 20
+    assert len(result["insider_tip"]) > 5
+    assert len(result["complete_guide"]) > 50
+
+    # Test generate_mini_guide with another fictional city
+    guide_nov = generate_mini_guide(
+        model=None,
+        tokenizer=None,
+        destination="Novalis",
+        interests=["canal tours", "botanical gardens"],
+    )
+    assert guide_nov["status"] == "success"
+    assert guide_nov["destination"] == "Novalis"
+    assert "Lotus" in guide_nov["complete_guide"] or "canal" in guide_nov["complete_guide"].lower()
+
+    # Smoke test python compilation of Streamlit entry point
+    import py_compile
+    py_compile.compile("app/main.py", doraise=True)
 
 
 # Milestone 4: Evaluate the relevance and appeal of the generated recommendations.
