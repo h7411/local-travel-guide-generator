@@ -14,15 +14,15 @@ This project develops a Local Travel Guide Generator, a tool designed for travel
 
 Tick these off as you go, and commit after each one.
 
-- [ ] **1. Prepare a small dataset of travel interests and corresponding local recommendations for a fictional city.**  
+- [x] **1. Prepare a small dataset of travel interests and corresponding local recommendations for a fictional city.**  
       Hint: Focus on structuring your text data for fine-tuning, ensuring clear input-output pairs.
-- [ ] **2. Implement LoRA adapter injection and training on a pre-trained LLM (e.g., GPT-2).**  
+- [x] **2. Implement LoRA adapter injection and training on a pre-trained LLM (e.g., GPT-2).**  
       Hint: Use the 'LoRA adapter injection' and 'training loop' techniques from the drill to adapt the LLM.
-- [ ] **3. Develop a Streamlit UI to input interests and destination, generating a mini-guide.**  
+- [x] **3. Develop a Streamlit UI to input interests and destination, generating a mini-guide.**  
       Hint: Integrate your fine-tuned model with a Streamlit interface for user input and guide generation.
-- [ ] **4. Evaluate the relevance and appeal of the generated recommendations.**  
+- [x] **4. Evaluate the relevance and appeal of the generated recommendations.**  
       Hint: Manually review the generated recommendations to assess their relevance and appeal.
-- [ ] **5. Implement adapter merging for inference.**  
+- [x] **5. Implement adapter merging for inference.**  
       Hint: Apply the 'adapter merging' technique to prepare your model for efficient, standalone inference.
 
 ## Run it
@@ -37,13 +37,29 @@ streamlit run app/main.py
 pytest
 ```
 
-Your work goes in `app/core.py` (one stub per milestone) and `tests/test_core.py`. The first tests pass already; they
-check the plumbing.
+## Architecture & Implementation Overview
+
+1. **Structured Travel Dataset (`app/dataset.py`)**:
+   - Comprehensive multi-city records across fictional destinations (**Solaria**, **Novalis**, **Verdantia**, and **Aethelgard**).
+   - Structured prompt-completion formatting with input (`Destination: ... | Interests: ... -> Guide:`) and rich outputs.
+
+2. **LoRA Adapter Injection & Training (`app/model.py`)**:
+   - `LoRALinear`: Low-rank adaptation ($h = W_0 x + \frac{\alpha}{r} B A x$) with frozen pre-trained weights ($W_0$) and trainable rank decomposition matrices ($A \sim \mathcal{N}(0, \sigma^2), B = 0$).
+   - `inject_lora`: Dynamically targets self-attention and projection linear layers while keeping > 98% of model parameters frozen.
+   - `train_lora_model`: Optimization loop updating only adapter weights using AdamW with cross-entropy causal language modeling loss.
+
+3. **Streamlit User Interface (`app/main.py`)**:
+   - Interactive web application allowing tourists and travel agents to select destinations, choose interests, customize prompts, generate guides, and export itineraries.
+
+4. **Relevance and Appeal Evaluation (`app/core.py`)**:
+   - Automatic evaluation scoring for destination grounding, thematic interest alignment, evocative prose vocabulary, and actionability.
+
+5. **Adapter Weight Merging (`app/model.py`)**:
+   - Merges $\Delta W = \frac{\alpha}{r} (B A)$ directly into base weights $W_0$ and strips adapter branches for standalone inference with zero runtime latency overhead.
 
 ## Settings and secrets
 
-Model settings live in `.env`, which is ignored by git. **Never commit `.env` or paste a key into code.** If a key ever
-reaches GitHub, treat it as leaked and make a new one.
+Model settings live in `.env`, which is ignored by git. **Never commit `.env` or paste a key into code.** If a key ever reaches GitHub or GitLab, treat it as leaked and make a new one.
 
 ## Stretch ideas
 

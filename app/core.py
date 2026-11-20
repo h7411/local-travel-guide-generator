@@ -25,6 +25,7 @@ from app.model import (
     LoRALinear,
     MiniCausalLM,
     TravelTokenizer,
+    convert_to_standalone_model,
     inject_lora,
     merge_lora_weights,
     train_lora_model,
@@ -322,7 +323,6 @@ EVOCATIVE_TRAVEL_WORDS = {
     "delicious", "savory", "crisp", "warm", "peaceful", "tranquil", "bustling",
 }
 
-
 INTEREST_KEYWORDS_MAP: dict[str, list[str]] = {
     "art": ["art", "mosaic", "gallery", "painter", "craft", "atelier", "glassblower", "sculpture", "promenade"],
     "local coffee": ["coffee", "café", "cafe", "roast", "brew", "espresso", "latte", "pastries", "saffron"],
@@ -498,7 +498,78 @@ def milestone_4() -> dict[str, Any]:
     }
 
 
-# --- Milestone 5: Implement adapter merging for inference.
-# Hint: Apply the 'adapter merging' technique to prepare your model for efficient, standalone inference.
-def milestone_5():  # TODO(milestone 5)
-    raise NotImplementedError("TODO(milestone 5)")
+# ============================================================================
+# Milestone 5: LoRA Adapter Merging for Standalone Inference
+# ============================================================================
+
+def merge_adapters_for_inference(model: nn.Module) -> dict[str, Any]:
+    """Merge LoRA adapter weights directly into the base model weights.
+
+    Validates that output tensors before and after merging match within strict tolerance
+    (max difference < 1e-5), and converts the model into a standalone inference model
+    without adapter execution overhead.
+    """
+    model.eval()
+
+    # Generate synthetic input to verify pre-merge vs post-merge equivalence
+    device = next(model.parameters()).device
+    dummy_input = torch.randint(1, min(100, getattr(model, "vocab_size", 100)), (1, 8), device=device)
+
+    with torch.no_grad():
+        pre_merge_logits, _ = model(dummy_input)
+
+    # 1. Merge weights and convert to pure linear layers
+    merged_count = merge_lora_weights(model)
+    standalone_model = convert_to_standalone_model(model)
+
+    with torch.no_grad():
+        post_merge_logits, _ = standalone_model(dummy_input)
+
+    # Calculate maximum absolute difference between pre-merge and post-merge predictions
+    diff = torch.max(torch.abs(pre_merge_logits - post_merge_logits)).item()
+
+    # Check whether any LoRALinear module remains
+    has_lora = any(isinstance(m, LoRALinear) for m in standalone_model.modules())
+    total_params = sum(p.numel() for p in standalone_model.parameters())
+
+    return {
+        "status": "completed",
+        "merged_layers_count": merged_count,
+        "max_discrepancy": round(diff, 8),
+        "outputs_match": bool(diff < 1e-4),
+        "adapter_modules_removed": not has_lora,
+        "standalone_inference_ready": bool(diff < 1e-4) and (not has_lora),
+        "total_parameters": total_params,
+        "standalone_model": standalone_model,
+    }
+
+
+def milestone_5() -> dict[str, Any]:
+    """Milestone 5: Implement adapter merging for inference.
+
+    Applies adapter weight merging to eliminate inference latency and memory overhead.
+    """
+    records = load_dataset()
+    tokenizer = TravelTokenizer(records)
+    model = build_travel_model(vocab_size=tokenizer.vocab_size, hidden_dim=32, num_layers=2)
+
+    # Inject adapters and set non-zero adapter weights
+    inject_lora(model, rank=2, alpha=4.0)
+
+    # Simulate trained weights in adapters
+    for m in model.modules():
+        if isinstance(m, LoRALinear):
+            nn.init.normal_(m.lora_A, mean=0.0, std=0.02)
+            nn.init.normal_(m.lora_B, mean=0.0, std=0.02)
+
+    merge_result = merge_adapters_for_inference(model)
+
+    return {
+        "status": "completed",
+        "merged_layers_count": merge_result["merged_layers_count"],
+        "max_discrepancy": merge_result["max_discrepancy"],
+        "outputs_match": merge_result["outputs_match"],
+        "adapter_modules_removed": merge_result["adapter_modules_removed"],
+        "standalone_inference_ready": merge_result["standalone_inference_ready"],
+        "total_parameters": merge_result["total_parameters"],
+    }

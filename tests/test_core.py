@@ -7,16 +7,19 @@ from app.core import (
     build_travel_model,
     calculate_appeal,
     calculate_relevance,
+    convert_to_standalone_model,
     create_training_pairs,
     evaluate_recommendation,
     format_completion,
     format_prompt,
     generate_mini_guide,
     inject_lora,
+    merge_adapters_for_inference,
     milestone_1,
     milestone_2,
     milestone_3,
     milestone_4,
+    milestone_5,
 )
 from app.model import TravelTokenizer
 
@@ -47,7 +50,7 @@ def test_milestone_1():
     prompt = format_prompt("Solaria", ["art", "local coffee"])
     assert prompt == "Destination: Solaria | Interests: art, local coffee -> Guide:"
 
-    comp = format_completion("Sunlit Mosaics", ["Old Quarter"], "Explore historic mosaics.", "Visit early.")
+    comp = format_completion("Sunlit Mosaics", ["Old Quarter"], "Explore historic mosaics.", "Visit early.", destination="Solaria")
     assert "Sunlit Mosaics" in comp
     assert "Old Quarter" in comp
     assert "Insider Tip: Visit early." in comp
@@ -129,7 +132,7 @@ def test_milestone_4():
 
     # Test individual metrics functions
     sample_text = (
-        "Sunlit Bohemia: Mosaics and Artisanal Roasts. Recommended stops: Sunken Mosaic Gallery, Café Antiqua in Solaria. "
+        "[Solaria] Sunlit Bohemia: Mosaics and Artisanal Roasts. Recommended stops: Sunken Mosaic Gallery, Café Antiqua in Solaria. "
         "Begin your morning at Café Antiqua savoring a vibrant saffron roast brewed over hot sand. "
         "Stroll scenic lanes and admire stunning historic mosaics. Insider Tip: Arrive early for fresh pastries."
     )
@@ -145,6 +148,42 @@ def test_milestone_4():
 
 
 # Milestone 5: Implement adapter merging for inference.
-@pytest.mark.skip(reason="remove this line when you start milestone 5")
 def test_milestone_5():
-    raise NotImplementedError("write the test for milestone 5")
+    result = milestone_5()
+    assert result["status"] == "completed"
+    assert result["merged_layers_count"] > 0
+    assert result["max_discrepancy"] < 1e-4
+    assert result["outputs_match"] is True
+    assert result["adapter_modules_removed"] is True
+    assert result["standalone_inference_ready"] is True
+
+    # Unit test LoRALinear merge and unmerge directly
+    base = torch.nn.Linear(8, 16)
+    lora = LoRALinear(base, rank=2, alpha=4.0)
+
+    # Set non-zero adapter weights
+    torch.nn.init.normal_(lora.lora_A, mean=0.0, std=0.1)
+    torch.nn.init.normal_(lora.lora_B, mean=0.0, std=0.1)
+
+    x = torch.randn(2, 4, 8)
+    with torch.no_grad():
+        out_before_merge = lora(x)
+
+    # Merge weights
+    lora.merge()
+    assert lora.merged is True
+
+    with torch.no_grad():
+        out_after_merge = lora(x)
+        out_direct_base = lora.base_layer(x)
+
+    assert torch.allclose(out_before_merge, out_after_merge, atol=1e-5)
+    assert torch.allclose(out_after_merge, out_direct_base, atol=1e-5)
+
+    # Unmerge weights
+    lora.unmerge()
+    assert lora.merged is False
+    with torch.no_grad():
+        out_unmerged = lora.base_layer(x)
+    # Base layer is restored
+    assert not torch.allclose(out_unmerged, out_after_merge, atol=1e-4)

@@ -4,6 +4,8 @@ Implements:
 - LoRALinear: Low-rank adapter linear layer wrapper
 - inject_lora: Injects LoRA adapters into targeted linear layers
 - merge_lora_weights: Folds adapter weights (alpha/r * B @ A) into base weights
+- unmerge_lora_weights: Reverses adapter weight merging
+- convert_to_standalone_model: Replaces all LoRALinear modules with pure nn.Linear layers
 - TravelTokenizer: Vocabulary and tokenization for travel prompts and guides
 - MiniGPT: Compact, efficient GPT-2 style causal language model for fast training and inference
 - train_lora_model: Training loop that optimizes only adapter parameters
@@ -80,11 +82,6 @@ class LoRALinear(nn.Module):
         if self.merged or self.rank == 0:
             return base_out
 
-        # Compute adapter contribution: (x @ A^T) @ B^T * scaling
-        # x: [..., in_features]
-        # x_dropout: [..., in_features]
-        # intermediate: [..., rank]
-        # adapter_out: [..., out_features]
         x_dropout = self.dropout(x)
         adapter_out = F.linear(F.linear(x_dropout, self.lora_A), self.lora_B) * self.scaling
         return base_out + adapter_out
@@ -126,7 +123,6 @@ def inject_lora(
     All original model weights are frozen. Only LoRA parameters (lora_A, lora_B)
     remain trainable.
     """
-    # 1. Freeze all existing parameters
     for param in model.parameters():
         param.requires_grad = False
 
@@ -138,7 +134,6 @@ def inject_lora(
         nonlocal injected_count
         for name, child in module.named_children():
             full_name = f"{parent_name}.{name}" if parent_name else name
-            # Check if this child matches target linear layer
             is_target = any(t in name.lower() or t in full_name.lower() for t in targets)
             if isinstance(child, nn.Linear) and is_target and not isinstance(child, LoRALinear):
                 lora_layer = LoRALinear(child, rank=rank, alpha=alpha, dropout=dropout)
@@ -184,6 +179,25 @@ def unmerge_lora_weights(model: nn.Module) -> int:
     return unmerged_count
 
 
+def convert_to_standalone_model(model: nn.Module) -> nn.Module:
+    """Merge all LoRA weights and convert LoRALinear modules back into pure nn.Linear layers.
+
+    Eliminates all adapter parameters and runtime overhead for efficient standalone inference.
+    """
+    merge_lora_weights(model)
+
+    def _replace_with_pure_linear(module: nn.Module):
+        for name, child in module.named_children():
+            if isinstance(child, LoRALinear):
+                # Replace with the underlying base_layer which now holds the merged weights
+                setattr(module, name, child.base_layer)
+            else:
+                _replace_with_pure_linear(child)
+
+    _replace_with_pure_linear(model)
+    return model
+
+
 # ============================================================================
 # Tokenizer
 # ============================================================================
@@ -207,7 +221,6 @@ class TravelTokenizer:
             corpus_texts.append(r.to_prompt())
             corpus_texts.append(r.to_completion())
 
-        # Build vocabulary from corpus
         tokens_set: set[str] = set()
         for text in corpus_texts:
             for token in self._tokenize_words(text):
@@ -225,8 +238,7 @@ class TravelTokenizer:
         self.unk_id = self.token2id[self.UNK_TOKEN]
 
     def _tokenize_words(self, text: str) -> list[str]:
-        # Keep punctuation as separate tokens
-        pattern = r"\b[a-zA-Z0-9]+(?:'[a-zA-Z0-9]+)?\b|[.,;:!?\->|]"
+        pattern = r"\b[a-zA-Z0-9]+(?:'[a-zA-Z0-9]+)?\b|[.,;:!?\->|\[\]]"
         return re.findall(pattern, text)
 
     def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
@@ -244,11 +256,12 @@ class TravelTokenizer:
             token = self.id2token.get(tid, self.UNK_TOKEN)
             tokens.append(token)
 
-        # Reconstruct natural text with correct spacing around punctuation
         text = ""
         for token in tokens:
-            if token in {".", ",", "!", "?", ";", ":"}:
+            if token in {".", ",", "!", "?", ";", ":", "]"}:
                 text = text.rstrip() + token + " "
+            elif token in {"["}:
+                text += token
             elif token in {"-", "|", "->"}:
                 text = text.rstrip() + f" {token} "
             else:
@@ -279,7 +292,6 @@ class MultiHeadCausalAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_dim, hidden_dim)
         self.out_proj = nn.Linear(hidden_dim, hidden_dim)
 
-        # Causal mask: lower triangular matrix
         mask = torch.tril(torch.ones(max_seq_len, max_seq_len)).unsqueeze(0).unsqueeze(0)
         self.register_buffer("causal_mask", mask)
 
@@ -367,7 +379,6 @@ class MiniCausalLM(nn.Module):
 
         loss = None
         if targets is not None:
-            # Shift so tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
             shift_targets = targets[..., 1:].contiguous()
             loss = F.cross_entropy(
@@ -426,14 +437,12 @@ def train_lora_model(
     model.train()
     model.to(device)
 
-    # Filter trainable parameters: strictly LoRA weights
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     if not trainable_params:
         raise RuntimeError("No trainable parameters found. Did you inject LoRA adapters?")
 
     optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=0.01)
 
-    # Prepare batches
     encoded_samples = [
         tokenizer.encode(t, add_special_tokens=True)[:max_len] for t in training_texts
     ]
