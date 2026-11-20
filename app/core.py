@@ -11,12 +11,24 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import torch
+import torch.nn as nn
+
 from app.dataset import (
     TRAVEL_DATASET_RAW,
     TravelRecord,
     get_dataset_stats,
     get_training_pairs,
     load_dataset,
+)
+from app.model import (
+    LoRALinear,
+    MiniCausalLM,
+    TravelTokenizer,
+    inject_lora,
+    merge_lora_weights,
+    train_lora_model,
+    unmerge_lora_weights,
 )
 
 
@@ -58,7 +70,6 @@ def milestone_1() -> dict[str, Any]:
     stats = get_dataset_stats()
     training_pairs = create_training_pairs(records)
 
-    # Validate that every sample has valid prompt, completion, and full_text
     solaria_records = [r for r in records if r.destination == "Solaria"]
     sample = training_pairs[0]
 
@@ -77,10 +88,91 @@ def milestone_1() -> dict[str, Any]:
     }
 
 
-# --- Milestone 2: Implement LoRA adapter injection and training on a pre-trained LLM (e.g., GPT-2).
-# Hint: Use the 'LoRA adapter injection' and 'training loop' techniques from the drill to adapt the LLM.
-def milestone_2():  # TODO(milestone 2)
-    raise NotImplementedError("TODO(milestone 2)")
+# ============================================================================
+# Milestone 2: LoRA Adapter Injection & Training Loop
+# ============================================================================
+
+def build_travel_model(
+    vocab_size: int,
+    hidden_dim: int = 64,
+    num_layers: int = 2,
+    num_heads: int = 4,
+) -> MiniCausalLM:
+    """Instantiate a base causal language model for fine-tuning."""
+    return MiniCausalLM(
+        vocab_size=vocab_size,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        num_heads=num_heads,
+    )
+
+
+def milestone_2(
+    rank: int = 4,
+    alpha: float = 8.0,
+    epochs: int = 3,
+    lr: float = 1e-3,
+    hidden_dim: int = 64,
+) -> dict[str, Any]:
+    """Milestone 2: Implement LoRA adapter injection and training on a pre-trained LLM.
+
+    Applies LoRA adapter injection to target linear layers, freezes base model weights,
+    and runs the training loop over the travel guide dataset.
+    """
+    records = load_dataset()
+    tokenizer = TravelTokenizer(records)
+
+    # 1. Instantiate pre-trained base model
+    model = build_travel_model(
+        vocab_size=tokenizer.vocab_size,
+        hidden_dim=hidden_dim,
+        num_layers=2,
+        num_heads=4,
+    )
+
+    # 2. Inject LoRA adapters
+    injection_stats = inject_lora(model, rank=rank, alpha=alpha)
+
+    # Verify that base weights are frozen
+    base_weights_frozen = True
+    adapter_weights_trainable = True
+
+    for name, module in model.named_modules():
+        if isinstance(module, LoRALinear):
+            if module.base_layer.weight.requires_grad:
+                base_weights_frozen = False
+            if not module.lora_A.requires_grad or not module.lora_B.requires_grad:
+                adapter_weights_trainable = False
+
+    # 3. Fine-tune LoRA adapters using training loop
+    training_texts = [r.to_training_pair()["full_text"] for r in records]
+    training_result = train_lora_model(
+        model=model,
+        training_texts=training_texts,
+        tokenizer=tokenizer,
+        epochs=epochs,
+        lr=lr,
+        max_len=64,
+    )
+
+    return {
+        "status": "completed",
+        "model": model,
+        "tokenizer": tokenizer,
+        "rank": rank,
+        "alpha": alpha,
+        "trainable_parameters": injection_stats["trainable_parameters"],
+        "total_parameters": injection_stats["total_parameters"],
+        "trainable_percentage": injection_stats["trainable_percentage"],
+        "injected_layers_count": injection_stats["injected_layers_count"],
+        "base_weights_frozen": base_weights_frozen,
+        "adapter_weights_trainable": adapter_weights_trainable,
+        "epochs": training_result["epochs"],
+        "initial_loss": training_result["initial_loss"],
+        "final_loss": training_result["final_loss"],
+        "loss_reduced": training_result["loss_reduced"],
+        "loss_history": training_result["loss_history"],
+    }
 
 
 # --- Milestone 3: Develop a Streamlit UI to input interests and destination, generating a mini-guide.

@@ -1,11 +1,16 @@
 """Your tests. Each milestone in README.md gets one here: write the test first, then make it pass."""
 import pytest
+import torch
 
 from app.core import (
+    LoRALinear,
+    build_travel_model,
     create_training_pairs,
     format_completion,
     format_prompt,
+    inject_lora,
     milestone_1,
+    milestone_2,
 )
 
 
@@ -42,9 +47,40 @@ def test_milestone_1():
 
 
 # Milestone 2: Implement LoRA adapter injection and training on a pre-trained LLM (e.g., GPT-2).
-@pytest.mark.skip(reason="remove this line when you start milestone 2")
 def test_milestone_2():
-    raise NotImplementedError("write the test for milestone 2")
+    result = milestone_2(rank=2, alpha=4.0, epochs=2, hidden_dim=32)
+    assert result["status"] == "completed"
+    assert result["injected_layers_count"] > 0
+    assert result["trainable_parameters"] > 0
+    assert result["trainable_percentage"] < 5.0  # LoRA uses only a small fraction of parameters
+    assert result["base_weights_frozen"] is True
+    assert result["adapter_weights_trainable"] is True
+    assert len(result["loss_history"]) == 2
+    assert result["final_loss"] > 0.0
+
+    # Unit test LoRALinear mechanics directly
+    base = torch.nn.Linear(16, 32)
+    lora = LoRALinear(base, rank=2, alpha=4.0)
+
+    # Base weight must be frozen
+    assert lora.base_layer.weight.requires_grad is False
+    assert lora.lora_A.requires_grad is True
+    assert lora.lora_B.requires_grad is True
+
+    # At init, lora_B is zero, so output exactly matches base_layer
+    x = torch.randn(2, 4, 16)
+    with torch.no_grad():
+        out_base = base(x)
+        out_lora = lora(x)
+    assert torch.allclose(out_base, out_lora, atol=1e-6)
+
+    # Gradients only flow to adapter weights
+    out_lora = lora(x)
+    loss = out_lora.sum()
+    loss.backward()
+    assert base.weight.grad is None
+    assert lora.lora_A.grad is not None
+    assert lora.lora_B.grad is not None
 
 
 # Milestone 3: Develop a Streamlit UI to input interests and destination, generating a mini-guide.
