@@ -56,7 +56,7 @@ pytest
 
 5. **Adapter Weight Merging (`app/model.py`)**:
    - Merges $\Delta W = \frac{\alpha}{r} (B A)$ directly into base weights $W_0$ and strips adapter branches for standalone inference with zero runtime latency overhead.
-
+nono not me 
 ## Settings and secrets
 
 Model settings live in `.env`, which is ignored by git. **Never commit `.env` or paste a key into code.** If a key ever reaches GitHub or GitLab, treat it as leaked and make a new one.
